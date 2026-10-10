@@ -1,24 +1,110 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute } from '@tanstack/react-router';
+import { useState } from 'react';
+import { LayoutDashboard, Truck, MapPin, Route as RouteIcon, Fuel, ArrowUpRight, ArrowRight, ArrowDownLeft, Plus, Search, ChevronRight, ChevronDown, Bell, CalendarDays, CircleCheck, CircleHelp, Activity, SlidersHorizontal, Building2, Check, AlertTriangle, Navigation, LogOut } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { NetworkMap } from '@/components/logistics/network-map';
+import { initialDepots, initialTrucks, initialDistances, pairKey, rangeOf, type TruckRecord, type Trip } from '@/lib/logistics';
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
-export const Route = createFileRoute("/")({
-  component: Index,
+export const Route = createFileRoute('/')({
+  head: () => ({ meta: [
+    { title: 'Fleetway — Fleet overview' },
+    { name: 'description', content: 'Manage your location network, truck movements, and fuel with Fleetway’s simple logistics trial.' },
+    { property: 'og:title', content: 'Fleetway — Fleet overview' },
+    { property: 'og:description', content: 'Your trucks, locations, journeys, and fuel in one clear workspace.' },
+    { property: 'og:type', content: 'website' }, { name: 'twitter:card', content: 'summary_large_image' },
+  ] }), component: Index,
 });
-
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
+type View = 'overview' | 'fleet' | 'locations' | 'trips' | 'fuel';
+type Modal = 'truck' | 'location' | 'depart' | 'arrive' | 'refuel' | 'help' | null;
+const navigation = [{id:'overview',label:'Overview',icon:LayoutDashboard},{id:'fleet',label:'Trucks',icon:Truck},{id:'locations',label:'Locations',icon:MapPin},{id:'trips',label:'Trips',icon:RouteIcon},{id:'fuel',label:'Fuel',icon:Fuel}] as const;
 function Index() {
-  return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
-  );
+  const [view,setView] = useState<View>('overview');
+  const [depots,setDepots] = useState(initialDepots);
+  const [trucks,setTrucks] = useState(initialTrucks);
+  const [distances,setDistances] = useState(initialDistances);
+  const [trips,setTrips] = useState<Trip[]>([]);
+  const [selected,setSelected] = useState('chennai');
+  const [staffLocation,setStaffLocation] = useState('all');
+  const [filter,setFilter] = useState('all');
+  const [search,setSearch] = useState('');
+  const [modal,setModal] = useState<Modal>(null);
+  const [activeTruck,setActiveTruck] = useState<TruckRecord>();
+  const [destination,setDestination] = useState('');
+  const [fuel,setFuel] = useState('');
+  const [truckNumber,setTruckNumber] = useState('');
+  const [driver,setDriver] = useState('');
+  const [mileage,setMileage] = useState('5.5');
+  const [newLocation,setNewLocation] = useState('');
+  const [error,setError] = useState('');
+  const [toast,setToast] = useState('');
+  const depotName = (id:string) => depots.find(d=>d.id===id)?.name ?? id;
+  const inTransit = trucks.filter(t=>t.destination);
+  const parked = trucks.filter(t=>!t.destination);
+  const lowFuel = trucks.filter(t=>!t.destination && rangeOf(t)<100);
+  const scoped = trucks.filter(t=>staffLocation==='all'||t.location===staffLocation||t.destination===staffLocation);
+  const visibleTrucks = scoped.filter(t=>(filter==='all'||(filter==='transit'?!!t.destination:filter==='parked'?!t.destination:rangeOf(t)<100&&!t.destination))&&(t.number+' '+t.driver).toLowerCase().includes(search.toLowerCase()));
+  const tripDistance = activeTruck&&destination ? distances[pairKey(activeTruck.location,destination)] : undefined;
+  const fuelNeeded = activeTruck&&tripDistance ? tripDistance/(activeTruck.actualMileage??activeTruck.mileage) : undefined;
+  const notify = (text:string) => { setToast(text); setTimeout(()=>setToast(''),4000); };
+  const openModal = (kind:Modal,truck?:TruckRecord) => { setError('');setModal(kind);setActiveTruck(truck);setFuel(truck?String(truck.fuel):'');setDestination('');setTruckNumber('');setDriver('');setNewLocation(''); };
+  const closeModal = () => {setModal(null);setError('');};
+  const submit = (event:React.FormEvent) => {
+    event.preventDefault(); setError('');
+    const value=Number(fuel);
+    if(modal==='location') {
+      const name=newLocation.trim(); if(!name||depots.some(d=>d.name.toLowerCase()===name.toLowerCase())) {setError('Enter a unique location name.');return;}
+      const id='depot-'+Date.now(); setDepots(ds=>[...ds,{id,name,code:name.slice(0,3).toUpperCase(),x:15+(ds.length%4)*19,y:22+(ds.length%2)*14}]);setSelected(id);notify('Location added');
+    } else if(modal==='truck') {
+      if(!truckNumber.trim()||trucks.some(t=>t.number.toLowerCase()===truckNumber.trim().toLowerCase())) {setError('Enter a unique truck number.');return;}
+      if(!Number.isFinite(Number(mileage))||Number(mileage)<=0||!Number.isFinite(value)||value<0) {setError('Enter positive mileage and fuel of 0 L or more.');return;}
+      setTrucks(ts=>[...ts,{id:String(Date.now()),number:truckNumber.trim().toUpperCase(),driver:driver.trim()||'Unassigned',mileage:Number(mileage),fuel:value,location:selected}]);notify('Truck added');
+    } else if(activeTruck) {
+      if(!Number.isFinite(value)||value<0||fuel==='') {setError('Enter fuel of 0 L or more.');return;}
+      if(modal==='depart') {
+        if(!destination||!tripDistance||!fuelNeeded) {setError('Choose a destination with a saved distance.');return;}
+        if(value<fuelNeeded) {setError(`Refuel first. This trip needs approximately ${fuelNeeded.toFixed(1)} L.`);return;}
+        setTrucks(ts=>ts.map(t=>t.id===activeTruck.id?{...t,destination,fuel:value,startFuel:value,tripDistance}:t));notify('Truck marked in transit');
+      } else if(modal==='arrive') {
+        const used=(activeTruck.startFuel??activeTruck.fuel)-value;
+        if(used<=0||!activeTruck.tripDistance||!activeTruck.destination) {setError('Arrival fuel must be less than departure fuel.');return;}
+        const actual=activeTruck.tripDistance/used;
+        setTrips(ts=>[{id:String(Date.now()),truck:activeTruck.number,from:activeTruck.location,to:activeTruck.destination??'',distance:activeTruck.tripDistance??0,used,mileage:actual,time:new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})},...ts]);
+        setTrucks(ts=>ts.map(t=>t.id===activeTruck.id?{...t,location:activeTruck.destination??t.location,destination:undefined,fuel:value,actualMileage:actual,startFuel:undefined,tripDistance:undefined}:t));notify(`Arrived · ${actual.toFixed(1)} km/L actual mileage`);
+      } else if(modal==='refuel') {
+        if(value<=activeTruck.fuel) {setError('New fuel level must be greater than current fuel.');return;}
+        setTrucks(ts=>ts.map(t=>t.id===activeTruck.id?{...t,fuel:value}:t));notify('Fuel updated');
+      }
+    }
+    closeModal();
+  };
+  const stats=[{label:'Total trucks',value:trucks.length,icon:Truck,kind:'neutral',foot:'Across your network'},{label:'In transit',value:inTransit.length,icon:Navigation,kind:'transit',foot:'On the move'},{label:'At location',value:parked.length,icon:MapPin,kind:'',foot:'Ready for the next trip'},{label:'Low fuel',value:lowFuel.length,icon:Fuel,kind:'warning',foot:'Below 100 km range'}];
+  const renderFleet=()=><section className="fleet-section">
+    <div className="section-heading"><h2>{view==='fuel'?'Fuel & range':'Your fleet'} <small>{scoped.length} trucks</small></h2><Button variant="ghost" className="text-action" onClick={()=>{setView('fleet');setFilter('all');setSearch('');}}>View all <ArrowRight/></Button></div>
+    <div className="fleet-toolbar"><div className="filter-tabs">{[{id:'all',label:'All trucks',count:scoped.length},{id:'transit',label:'In transit',count:scoped.filter(t=>t.destination).length},{id:'parked',label:'At location',count:scoped.filter(t=>!t.destination).length},{id:'low',label:'Low fuel',count:scoped.filter(t=>!t.destination&&rangeOf(t)<100).length}].map(f=><Button key={f.id} variant="ghost" className={filter===f.id?'active':''} onClick={()=>setFilter(f.id)}>{f.label}<small>{f.count}</small></Button>)}</div><label className="search-field"><Search size={14}/><input aria-label="Search trucks" placeholder="Search truck number..." value={search} onChange={e=>setSearch(e.target.value)}/></label></div>
+    <div className="fleet-table-wrap"><table className="fleet-table"><thead><tr><th>Truck</th><th>Status</th><th>Location / Route</th><th>Fuel</th><th>Range</th><th>Mileage</th><th/></tr></thead><tbody>{visibleTrucks.map(t=><tr key={t.id}><td><div className="truck-cell"><span className="truck-icon"><Truck size={16}/></span><div><strong>{t.number}</strong><small>{t.driver}</small></div></div></td><td><span className={`status-badge ${t.destination?'transit':rangeOf(t)<100?'warning':''}`}>{t.destination?<Navigation size={10}/>:rangeOf(t)<100?<Fuel size={10}/>:<span className="live-dot"/>}{t.destination?'In transit':rangeOf(t)<100?'Low fuel':'At location'}</span></td><td><span className="flex items-center gap-1.5">{depotName(t.location)}{t.destination&&<><ArrowRight size={12} className="text-muted-foreground"/>{depotName(t.destination)}</>}</span>{t.destination&&<small className="block text-muted-foreground text-[9px] mt-1">{t.tripDistance} km</small>}</td><td><div className={rangeOf(t)<100?'fuel-low':''}><span className="fuel-cell"><Fuel/>{t.fuel} L</span><div className="fuel-track"><div className="fuel-fill" style={{width:`${Math.min(100,t.fuel)}%`}}/></div></div></td><td>{t.destination?'—':`${rangeOf(t)} km`}</td><td>{(t.actualMileage??t.mileage).toFixed(1)} <span className="text-muted-foreground text-[9px]">km/L</span></td><td>{t.destination?<Button variant="outline" className="table-action" onClick={()=>openModal('arrive',t)} disabled={staffLocation!=='all'&&staffLocation!==t.destination}><ArrowDownLeft/>Arrive</Button>:<Button variant={rangeOf(t)<100?'outline':'ghost'} className={`table-action ${rangeOf(t)<100?'text-warning':'text-primary'}`} onClick={()=>openModal(view==='fuel'||rangeOf(t)<100?'refuel':'depart',t)}>{view==='fuel'||rangeOf(t)<100?<Fuel/>:<ArrowUpRight/>}{view==='fuel'||rangeOf(t)<100?'Refuel':'Dispatch'}</Button>}</td></tr>)}</tbody></table>{!visibleTrucks.length&&<div className="empty-state">No trucks here</div>}</div>
+    <div className="table-footer"><span>{visibleTrucks.length} of {scoped.length} trucks</span><span className="flex items-center gap-1"><CircleCheck size={11}/> Updated just now</span></div>
+  </section>;
+  return <div className="app-shell">
+    <aside className="sidebar"><div className="brand"><span className="brand-mark"><RouteIcon size={23}/></span><span>fleetway<small>LOGISTICS, SIMPLIFIED</small></span></div><p className="nav-caption">WORKSPACE</p><nav className="side-nav" aria-label="Workspace">{navigation.map(item=><Button key={item.id} variant="ghost" className={`nav-item ${view===item.id?'active':''}`} onClick={()=>{setView(item.id);setFilter('all');setSearch('');}}><item.icon/><span>{item.label}</span>{item.id==='fleet'&&<span className="nav-count">{trucks.length}</span>}</Button>)}</nav><div className="sidebar-bottom"><Button variant="ghost" className="nav-item w-full justify-start text-muted-foreground" onClick={()=>openModal('help')}><CircleHelp/><span>Help & support</span></Button><div className="trial-note"><span className="live-dot"/> Trial workspace</div><div className="user-block"><span className="avatar">OP</span><div><strong>Operations</strong><small>{staffLocation==='all'?'All locations':depotName(staffLocation)}</small></div><Button variant="ghost" size="icon" title="Reset location selection" onClick={()=>setStaffLocation('all')}><LogOut size={14}/></Button></div></div></aside>
+    <main className="main-area"><header className="topbar"><div className="breadcrumb">Workspace <ChevronRight size={12}/><strong>{navigation.find(n=>n.id===view)?.label}</strong></div><div className="mobile-brand"><RouteIcon size={24}/>fleetway</div><div className="topbar-actions"><span className="live-indicator"><span className="live-dot"/> Trial mode</span><select className="location-select" aria-label="Staff location" value={staffLocation} onChange={e=>{setStaffLocation(e.target.value);if(e.target.value!=='all')setSelected(e.target.value);}}><option value="all">All locations</option>{depots.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><Button variant="ghost" size="icon" className="notification-button" title="View fuel alerts" onClick={()=>{setView('fuel');setFilter('low');}}><Bell/></Button><span className="avatar">OP</span></div></header>
+    <div className="content"><div className="page-heading"><div><h1>{view==='overview'?'Fleet overview':view==='fleet'?'Your trucks':view==='locations'?'Location network':view==='trips'?'Trip activity':'Fuel & range'}</h1><p>{view==='overview'?'Every truck. Every location. One clear view.':view==='locations'?`${depots.length} locations · Your connected network`:view==='trips'?'Departures, arrivals, and fuel used.':view==='fuel'?'Ready for the road ahead.':`${scoped.length} trucks across your network.`}</p></div><div className="heading-actions"><span className="date-chip"><CalendarDays size={13}/>10 Oct, 2026</span><Button onClick={()=>openModal(view==='locations'?'location':'truck')}><Plus/><span className="add-truck-label">{view==='locations'?'Add location':'Add truck'}</span></Button></div></div>
+    {view==='overview'&&<div className="stats-grid">{stats.map(s=><div className="stat-card" key={s.label}><div className="stat-top"><span>{s.label}</span><span className={`stat-icon ${s.kind}`}><s.icon size={18}/></span></div><div className="stat-value">{s.value.toString().padStart(2,'0')}</div><div className={`stat-foot ${s.kind==='warning'?'warning':''}`}>{s.kind==='warning'&&<AlertTriangle size={10}/>} {s.foot}</div></div>)}</div>}
+    {(view==='overview'||view==='locations')&&<div className="network-layout"><section className="map-section"><div className="section-heading"><h2>Location network <small>{depots.length} locations</small></h2><Button variant="ghost" className="text-action" onClick={()=>setView(view==='locations'?'overview':'locations')}><SlidersHorizontal size={12}/>{view==='locations'?'Overview':'Manage'}</Button></div><NetworkMap depots={depots} trucks={trucks} selected={selected} onSelect={setSelected}/></section><section className="locations-panel"><div className="section-heading"><h2>Locations</h2><MapPin size={14} className="text-muted-foreground"/></div><div className="location-list">{depots.map(d=><Button key={d.id} variant="ghost" className={`depot-item ${selected===d.id?'active':''}`} onClick={()=>{setSelected(d.id);if(view==='locations')setStaffLocation(d.id);}}><span className="depot-icon"><Building2 size={16}/></span><span className="depot-text"><strong>{d.name}</strong><small>{d.code} · {trucks.filter(t=>t.destination===d.id).length} incoming</small></span><span className="depot-count">{trucks.filter(t=>t.location===d.id&&!t.destination).length}</span><ChevronRight size={12}/></Button>)}<Button variant="outline" className="add-location" onClick={()=>openModal('location')}><Plus size={12}/>Add location</Button></div></section></div>}
+    {view==='locations'&&<section className="location-details"><div className="section-heading"><h2>Distances <small>km between locations</small></h2><span className="text-[10px] text-muted-foreground">Saved for this trial session</span></div><div className="distance-table">{depots.flatMap((a,i)=>depots.slice(i+1).map(b=><label key={pairKey(a.id,b.id)} className="distance-row"><span>{a.name} <ArrowRight size={12} className="inline mx-1"/> {b.name}</span><input type="number" min="1" max="10000" step="1" aria-label={`${a.name} to ${b.name} distance`} placeholder="—" value={distances[pairKey(a.id,b.id)]??''} onChange={e=>{const v=Number(e.target.value);setDistances(ds=>{const next={...ds};if(v>0&&v<=10000)next[pairKey(a.id,b.id)]=v;else delete next[pairKey(a.id,b.id)];return next;});}}/><small>km</small></label>))}</div></section>}
+    {(view==='overview'||view==='fleet'||view==='fuel')&&renderFleet()}
+    {view==='trips'&&<section><div className="section-heading"><h2>In transit <small>{inTransit.length} trips</small></h2></div><div className="activity-list">{inTransit.map(t=><div className="activity-row" key={t.id}><span className="stat-icon transit"><Navigation size={18}/></span><div><strong>{t.number}</strong><p>{depotName(t.location)} → {depotName(t.destination??'')} · {t.tripDistance} km</p></div><Button variant="outline" size="sm" onClick={()=>openModal('arrive',t)}><ArrowDownLeft/>Arrive</Button></div>)}{!inTransit.length&&<div className="empty-state">No trucks in transit</div>}</div><div className="section-heading mt-7"><h2>Completed <small>{trips.length} trips</small></h2></div><div className="activity-list">{trips.map(t=><div className="activity-row" key={t.id}><span className="stat-icon"><Check size={18}/></span><div><strong>{t.truck}</strong><p>{depotName(t.from)} → {depotName(t.to)} · {t.distance} km · {t.used.toFixed(1)} L used</p></div><div className="text-right"><strong>{t.mileage.toFixed(1)} km/L</strong><p>{t.time}</p></div></div>)}{!trips.length&&<div className="empty-state">No completed trips yet</div>}</div></section>}
+    <footer className="page-footer mt-7"><span className="footer-brand"><RouteIcon size={13}/>fleetway <span>· A smoother way to move.</span></span><span>Trial data · Changes reset on refresh</span><span className="flex items-center gap-1"><span className="live-dot"/>All systems ready</span></footer></div></main>
+    <Dialog open={modal!==null} onOpenChange={open=>{if(!open)closeModal();}}><DialogContent><DialogTitle className="flex items-center gap-2">{modal==='location'?<MapPin/>:modal==='refuel'?<Fuel/>:modal==='help'?<CircleHelp/>:<Truck/>}{modal==='truck'?'Add truck':modal==='location'?'Add location':modal==='depart'?'Dispatch truck':modal==='arrive'?'Confirm arrival':modal==='refuel'?'Refuel truck':'Trial workspace'}</DialogTitle><DialogDescription>{activeTruck?activeTruck.number:modal==='help'?'Fleetway logistics trial':modal==='location'?'Your location network':'Truck details'}</DialogDescription>
+    {modal==='help'?<><p className="text-sm text-muted-foreground">Sample locations and trucks are included. Changes last for this session only.</p><p className="text-sm text-muted-foreground">The location selector is a trial staff view, not a secure login. Shared saving and location logins are not connected.</p><Button onClick={closeModal}>Got it</Button></>:<form onSubmit={submit}>
+    <div className="form-grid">{modal==='truck'&&<><label className="form-field form-wide">Truck number<input required value={truckNumber} onChange={e=>setTruckNumber(e.target.value)} placeholder="TN 01 AB 1234" maxLength={24}/></label><label className="form-field form-wide">Driver<input value={driver} onChange={e=>setDriver(e.target.value)} placeholder="Driver name" maxLength={50}/></label><label className="form-field">Expected mileage · km/L<input type="number" min="0.1" step="0.1" required value={mileage} onChange={e=>setMileage(e.target.value)}/></label><label className="form-field">Fuel · L<input required type="number" min="0" step="0.1" value={fuel} onChange={e=>setFuel(e.target.value)}/></label><label className="form-field form-wide">Location<select value={selected} onChange={e=>setSelected(e.target.value)}>{depots.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label></>}
+    {modal==='location'&&<label className="form-field form-wide">Location name<input required autoFocus value={newLocation} onChange={e=>setNewLocation(e.target.value)} placeholder="Location name" maxLength={25}/></label>}
+    {modal==='depart'&&<><label className="form-field form-wide">Destination<select required value={destination} onChange={e=>setDestination(e.target.value)}><option value="">Select destination</option>{depots.filter(d=>d.id!==activeTruck?.location).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label><label className="form-field form-wide">Departure fuel · L<input required type="number" min="0" step="0.1" value={fuel} onChange={e=>setFuel(e.target.value)}/></label></>}
+    {(modal==='arrive'||modal==='refuel')&&<label className="form-field form-wide">{modal==='arrive'?'Arrival fuel remaining · L':'New total fuel level · L'}<input required type="number" min="0" step="0.1" value={fuel} onChange={e=>setFuel(e.target.value)}/></label>}</div>
+    {modal==='depart'&&destination&&<><div className="trip-summary"><div><span>Distance</span><strong>{tripDistance??'—'} km</strong></div><div><span>Fuel needed</span><strong>{fuelNeeded?.toFixed(1)??'—'} L</strong></div><div><span>Range</span><strong>{activeTruck?Math.floor(Number(fuel)*(activeTruck.actualMileage??activeTruck.mileage)):0} km</strong></div></div>{!tripDistance?<div className="notice"><AlertTriangle size={16}/>Save this route’s distance in Locations first.</div>:fuelNeeded&&Number(fuel)<fuelNeeded?<div className="notice"><Fuel size={16}/>Refuel before this trip</div>:<div className="notice success-notice"><CircleCheck size={16}/>Enough fuel for this trip</div>}</>}
+    {modal==='arrive'&&activeTruck&&<><div className="trip-summary"><div><span>Distance</span><strong>{activeTruck.tripDistance} km</strong></div><div><span>Departure fuel</span><strong>{activeTruck.startFuel} L</strong></div><div><span>Expected</span><strong>{activeTruck.mileage} km/L</strong></div></div>{Number(fuel)>=0&&Number(fuel)<(activeTruck.startFuel??0)&&<div className="trip-summary"><div><span>Actual mileage</span><strong>{((activeTruck.tripDistance??0)/((activeTruck.startFuel??0)-Number(fuel))).toFixed(1)} km/L</strong></div><div><span>Vs. expected</span><strong>{((((activeTruck.tripDistance??0)/((activeTruck.startFuel??0)-Number(fuel)))/activeTruck.mileage-1)*100).toFixed(0)}%</strong></div><div><span>Remaining range</span><strong>{Math.floor(Number(fuel)*(activeTruck.tripDistance??0)/((activeTruck.startFuel??0)-Number(fuel)))} km</strong></div></div>}</>}
+    {modal==='refuel'&&activeTruck&&<div className="trip-summary"><div><span>Current fuel</span><strong>{activeTruck.fuel} L</strong></div><div><span>New range</span><strong>{Math.floor(Number(fuel)*(activeTruck.actualMileage??activeTruck.mileage))} km</strong></div><div><span>Added fuel</span><strong>{Math.max(0,Number(fuel)-activeTruck.fuel).toFixed(1)} L</strong></div></div>}
+    {error&&<p role="alert" className="form-error">{error}</p>}<div className="flex justify-end gap-2 mt-5"><Button type="button" variant="outline" onClick={closeModal}>Cancel</Button><Button type="submit"><Check/>{modal==='depart'?'Dispatch':modal==='arrive'?'Confirm arrival':'Save'}</Button></div></form>}
+    </DialogContent></Dialog>{toast&&<div role="status" className="toast-note"><CircleCheck size={18}/>{toast}</div>}
+  </div>;
 }
