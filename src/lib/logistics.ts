@@ -1,5 +1,5 @@
 export type Depot = { id: string; name: string; code: string; x: number; y: number };
-export type TruckRecord = { id: string; number: string; driver: string; mileage: number; fuel: number; location: string; destination?: string; startFuel?: number; tripDistance?: number; actualMileage?: number };
+export type TruckRecord = { id: string; number: string; driver: string; mileage: number; fuel: number; location: string; destination?: string | undefined; startFuel?: number | undefined; tripDistance?: number | undefined; actualMileage?: number };
 export type Trip = { id: string; truck: string; from: string; to: string; distance: number; used: number; mileage: number; time: string };
 export const initialDepots: Depot[] = [
   { id: 'chennai', name: 'Chennai', code: 'CHN', x: 75, y: 57 },
